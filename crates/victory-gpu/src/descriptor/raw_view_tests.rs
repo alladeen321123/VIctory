@@ -201,9 +201,15 @@ fn dispatch(
     heap: &HostHeap,
     root: &ID3D12RootSignature,
     pso: &ID3D12PipelineState,
-    user_data: u32,
+    cs: &HostShader,
 ) -> windows::core::Result<()> {
-    let zeros = vec![0u32; user_data as usize];
+    let user_data = cs.user_data_dwords();
+    let mut constants = vec![0u32; user_data as usize];
+    for u in &cs.user_data {
+        if u.root == RootType::ResourceHeap {
+            constants[u.index as usize] = if u.dword == 0 { heap.guard_slot() } else { heap.count() };
+        }
+    }
     // SAFETY: an open list with every root argument set; the heap, its
     // table and the buffers its views read outlive the wait.
     unsafe {
@@ -217,7 +223,7 @@ fn dispatch(
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &alloc, pso)?;
         list.SetDescriptorHeaps(&[Some(heap.heap.clone())]);
         list.SetComputeRootSignature(root);
-        list.SetComputeRoot32BitConstants(0, user_data, zeros.as_ptr().cast(), 0);
+        list.SetComputeRoot32BitConstants(0, user_data, constants.as_ptr().cast(), 0);
         list.SetComputeRootShaderResourceView(1, heap.stride_table_gpu().expect("a table"));
         list.Dispatch(2, 1, 1);
         list.Close()?;
@@ -320,7 +326,7 @@ fn unknown_stride_reads_reach_the_bytes_of_the_view_in_the_slot() {
         unsafe {
             slots_copy.cast::<[u32; 2]>().write(chosen);
             out.add(5).cast::<[u32; 8]>().write([0; 8]);
-            dispatch(device, &heap, &root, &pso, cs.user_data_dwords()).expect("a dispatch");
+            dispatch(device, &heap, &root, &pso, &cs).expect("a dispatch");
             out.add(5).cast::<[u32; 8]>().read()
         }
     };
@@ -369,7 +375,7 @@ fn retiring_slot_is_unavailable_until_its_alias_is_cleared() {
         eprintln!("Skipping descriptor retirement test: no host view heap");
         return;
     };
-    let capacity = heap.alias_base() - heap.count();
+    let capacity = heap.guard_slot() - heap.count();
     let first = heap.dynamic(capacity).expect("empty dynamic pool");
     let last = first + capacity - 1;
     let mut during_cleanup = None;

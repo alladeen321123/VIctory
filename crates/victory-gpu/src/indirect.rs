@@ -322,17 +322,10 @@ mod tests {
             list.keep(&samplers);
         }
         // SAFETY: a live buffer and an open list.
-        let gpu = unsafe {
-            list.list.ResourceBarrier(&[transition(
-                &buffer,
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            )]);
-            buffer.GetGPUVirtualAddress()
-        };
+        let gpu = unsafe { buffer.GetGPUVirtualAddress() };
         for (kind, at, stride) in [(0, 0, 16), (2, 16, 12), (3, 32, 12)] {
             assert!(bound(&list, &buffer, gpu + at, (kind, stride, 1)));
-            done(&list, &buffer);
+            list.buffer_state(&buffer, BUFFER_READ);
         }
         list.close();
         host.execute(&[&list]);

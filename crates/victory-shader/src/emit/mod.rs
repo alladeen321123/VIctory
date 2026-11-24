@@ -13,7 +13,19 @@
 //!   heap: the descriptor index times 32 for CBV/SRV/UAV tables, times 16
 //!   for sampler tables (the console's descriptor sizes; the code adds
 //!   offsets in those units). The heap bases of dynamic resources are 0
-//!   and not listed.
+//!   and not listed. Past every other dword the program reads come the
+//!   host's heap bounds, root type `ResourceHeap` (`SamplerHeap`):
+//!   dword 0 is the bound view (sampler) heap's first guard slot, and a
+//!   heap index the code computes at or above it reads a guard slot
+//!   instead (an index past a heap hangs some GPUs): in a view heap the
+//!   one of the read's kind, `guard + heap_guard(kind)` (the host keeps a
+//!   null view of each kind of [`HEAP_GUARDS`] there, as a null view is
+//!   defined only when read as its own kind), in a sampler heap the guard
+//!   itself (any sampler will do). Dword 1 of `ResourceHeap` is the view
+//!   heap's title slots, the bound of a descriptor read straight from the
+//!   heap rather than through a table (past them the host keeps its own
+//!   tables of other draws). The host gives no table a slot at or above
+//!   the guard. The guard scheme is #483's.
 //! * **Descriptors** through SM 6.6 `ResourceDescriptorHeap[]` and
 //!   `SamplerDescriptorHeap[]`, at the index the console address gives, so
 //!   the host heaps keep the title's descriptor order. The root signature
@@ -98,7 +110,8 @@ use crate::{ShaderError, io, ir, resource, structure};
 
 pub use sampler::StaticSampler;
 pub use shader::{
-    ROOT_CBV_SPACE, RawWindow, SAMPLER_SPACE, STRIDE_SPACE, StrideEntry, USER_DATA_SPACE,
+    HEAP_GUARDS, ROOT_CBV_SPACE, RawWindow, SAMPLER_SPACE, STRIDE_SPACE, StrideEntry,
+    USER_DATA_SPACE, heap_guard,
 };
 
 /// The loop limit without an override: 2^20.
@@ -184,7 +197,8 @@ pub struct UserData {
     pub index: u32,
     /// Root parameter index in the title's root signature.
     pub slot: u8,
-    /// `Constants` or `Table` (see the module notes for the value).
+    /// `Constants` or `Table`, or `ResourceHeap` / `SamplerHeap` for a
+    /// heap bound (see the module notes for the value).
     pub root: RootType,
     /// Dword within the parameter.
     pub dword: u32,
@@ -504,6 +518,17 @@ mod tests {
     use super::bitcode::Attr;
     use super::lower::LOOP_LIMIT;
     use super::parse_loop_limit;
+
+    fn test_constants(cs: &HostShader, first: u32, views: usize) -> Vec<u32> {
+        let mut words = vec![0; cs.user_data_dwords().max(1) as usize];
+        words[0] = first;
+        for u in &cs.user_data {
+            if let Some(bound) = host::bound(u, views, 0) {
+                words[u.index as usize] = bound;
+            }
+        }
+        words
+    }
 
     #[test]
     fn the_loop_limit_switch_parses_or_falls_back() {
@@ -1110,8 +1135,9 @@ mod tests {
                     &root,
                     &pso,
                     &Dispatch {
+                        placed: None,
                         roots: vec![
-                            (0, Root::Constants(vec![0, 0, 0, 0, 0])),
+                            (0, Root::Constants(test_constants(&cs, 0, views.len()))),
                             (
                                 1,
                                 Root::View {
@@ -1237,8 +1263,9 @@ mod tests {
                             &root,
                             &pso,
                             &Dispatch {
+                                placed: None,
                                 roots: vec![
-                                    (0, Root::Constants(vec![0, 0, 0, 0, 0])),
+                                    (0, Root::Constants(test_constants(&cs, 0, 6))),
                                     (
                                         1,
                                         Root::View {
@@ -1331,8 +1358,9 @@ mod tests {
                             &root,
                             &pso,
                             &Dispatch {
+                                placed: None,
                                 roots: vec![
-                                    (0, Root::Constants(vec![s0, 0, 0, 0, 0])),
+                                    (0, Root::Constants(test_constants(&cs, s0, 3))),
                                     (
                                         1,
                                         Root::View {
